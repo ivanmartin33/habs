@@ -13,10 +13,13 @@ des statistiques et exporte tout en CSV. Cible **iOS + Android**, testable via
   - **Stats** — série (streak), taux de complétion sur 30 jours, mini-graphe des
     14 derniers jours.
   - **Réglages** — nombre de rappels/jour, mode aléatoire ou fixe, export CSV.
-- **3 types d'habitude**, chacune avec son propre check-in :
+- **4 types d'habitude**, chacune avec son propre check-in :
   - `bool` → bouton « Marquer comme fait »
   - `count` → stepper −/+ avec `valeur / objectif`
   - `scale` → boutons 1 à 5 (seuil de réussite, défaut 3)
+  - `tally` (Consommation) → bouton +1 cumulatif pour suivre une consommation
+    (ex : cigarettes). Affiche le total du jour et « depuis le dernier rappel » ;
+    stats = total/jour + moyenne sur 14 jours.
 - **Notifications locales** avec **fenêtre glissante** (7 jours d'avance, plafond
   60 notifications pour rester sous la limite iOS de 64), replanifiées à chaque
   retour de l'app au premier plan.
@@ -106,3 +109,8 @@ npx expo start
 - **Export** : `expo-file-system` (import `legacy` pour `documentDirectory` +
   `writeAsStringAsync`) puis `expo-sharing`. Colonnes :
   `date, heure, habitude, type, valeur, timestamp`.
+- **Notifications interactives** : catégories `tally` (boutons +1/+3/+5) et
+  `done` (bouton « Fait »), gérées via `setNotificationCategoryAsync` +
+  `addNotificationResponseReceivedListener`. En Expo Go le bouton ouvre l'app
+  pour appliquer l'incrément ; le vrai traitement en arrière-plan nécessite un
+  build EAS.

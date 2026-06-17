@@ -10,24 +10,31 @@ import {
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import * as Notifications from 'expo-notifications';
 
 import {
   COLORS,
   DEFAULT_SETTINGS,
   getEntries,
   getHabits,
+  getLastReminder,
   getSettings,
   saveEntries,
   saveHabits,
+  saveLastReminder,
   saveSettings,
   uid,
 } from './lib/storage';
 import {
   completionRate,
   currentStreak,
+  dayTotal,
   isDayCompleted,
   lastEntryForDay,
   lastNDays,
+  lastNDaysTotals,
+  relTime,
+  sumSince,
   todayKey,
 } from './lib/stats';
 import { rescheduleAll, setupNotifications } from './lib/notifications';
@@ -40,7 +47,7 @@ const TABS = [
   { key: 'settings', label: 'Réglages' },
 ];
 
-const TYPE_LABELS = { bool: 'Oui / Non', count: 'Compteur', scale: 'Échelle 1-5' };
+const TYPE_LABELS = { bool: 'Oui / Non', count: 'Compteur', scale: 'Échelle 1-5', tally: 'Consommation' };
 
 export default function App() {
   const [ready, setReady] = useState(false);
@@ -48,22 +55,60 @@ export default function App() {
   const [habits, setHabits] = useState([]);
   const [entries, setEntries] = useState([]);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [lastReminderAt, setLastReminderAt] = useState(0);
 
-  // Keep latest values for the AppState listener without re-subscribing.
-  const latest = useRef({ habits, settings });
-  latest.current = { habits, settings };
+  // Keep latest values for the AppState / notification listeners without re-subscribing.
+  const latest = useRef({ habits, settings, entries });
+  latest.current = { habits, settings, entries };
 
   // Initial load + permission request + first schedule.
   useEffect(() => {
     (async () => {
-      const [h, e, s] = await Promise.all([getHabits(), getEntries(), getSettings()]);
+      const [h, e, s, r] = await Promise.all([
+        getHabits(),
+        getEntries(),
+        getSettings(),
+        getLastReminder(),
+      ]);
       setHabits(h);
       setEntries(e);
       setSettings(s);
+      setLastReminderAt(r || 0);
       setReady(true);
       await setupNotifications();
       await rescheduleAll(h, s);
     })();
+  }, []);
+
+  // Mémorise quand un rappel arrive / est tapé → pour "depuis le dernier rappel",
+  // et applique les boutons d'action (+1/+3/+5, Fait) tapés depuis la notif.
+  useEffect(() => {
+    const mark = () => {
+      const ts = Date.now();
+      setLastReminderAt(ts);
+      saveLastReminder(ts);
+    };
+    const recv = Notifications.addNotificationReceivedListener(mark);
+    const resp = Notifications.addNotificationResponseReceivedListener((response) => {
+      mark();
+      const action = response.actionIdentifier;
+      const habitId = response?.notification?.request?.content?.data?.habitId;
+      const inc =
+        action === 'plus1' ? 1 : action === 'plus3' ? 3 : action === 'plus5' ? 5 : action === 'done' ? 1 : 0;
+      if (inc && habitId) {
+        const { habits: h, entries: e } = latest.current;
+        if (h.some((x) => x.id === habitId)) {
+          const entry = { id: uid(), habitId, date: todayKey(), ts: Date.now(), value: inc };
+          const next = [...e, entry];
+          setEntries(next);
+          saveEntries(next);
+        }
+      }
+    });
+    return () => {
+      recv.remove();
+      resp.remove();
+    };
   }, []);
 
   // Re-plan the sliding window every time the app returns to the foreground.
@@ -126,7 +171,12 @@ export default function App() {
 
       <View style={styles.body}>
         {tab === 'today' && (
-          <TodayScreen habits={habits} entries={entries} onCheckIn={checkIn} />
+          <TodayScreen
+            habits={habits}
+            entries={entries}
+            lastReminderAt={lastReminderAt}
+            onCheckIn={checkIn}
+          />
         )}
         {tab === 'habits' && (
           <HabitsScreen habits={habits} onChange={persistHabits} entries={entries} onEntriesChange={persistEntries} />
@@ -157,7 +207,7 @@ export default function App() {
 
 /* ----------------------------- Today ----------------------------- */
 
-function TodayScreen({ habits, entries, onCheckIn }) {
+function TodayScreen({ habits, entries, lastReminderAt, onCheckIn }) {
   if (habits.length === 0) {
     return (
       <EmptyState text="Aucune habitude. Ajoute-en dans l'onglet « Habitudes »." />
@@ -170,7 +220,7 @@ function TodayScreen({ habits, entries, onCheckIn }) {
     <ScrollView contentContainerStyle={styles.scroll}>
       {habits.map((habit) => {
         const last = lastEntryForDay(entries, habit.id, key);
-        const done = isDayCompleted(habit, entries, key);
+        const done = habit.type !== 'tally' && isDayCompleted(habit, entries, key);
         return (
           <View key={habit.id} style={styles.card}>
             <View style={styles.cardHeaderRow}>
@@ -178,7 +228,13 @@ function TodayScreen({ habits, entries, onCheckIn }) {
               <Text style={styles.cardTitle}>{habit.name}</Text>
               {done && <Text style={styles.badgeDone}>✓</Text>}
             </View>
-            <TodayControl habit={habit} last={last} onCheckIn={onCheckIn} />
+            <TodayControl
+              habit={habit}
+              last={last}
+              entries={entries}
+              lastReminderAt={lastReminderAt}
+              onCheckIn={onCheckIn}
+            />
           </View>
         );
       })}
@@ -186,7 +242,40 @@ function TodayScreen({ habits, entries, onCheckIn }) {
   );
 }
 
-function TodayControl({ habit, last, onCheckIn }) {
+function TodayControl({ habit, last, entries, lastReminderAt, onCheckIn }) {
+  if (habit.type === 'tally') {
+    const key = todayKey();
+    const total = Math.max(0, dayTotal(entries, habit.id, key));
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const reminderTs =
+      lastReminderAt && lastReminderAt >= startOfDay.getTime() ? lastReminderAt : 0;
+    const sinceReminder = reminderTs
+      ? Math.max(0, sumSince(entries, habit.id, reminderTs))
+      : null;
+    return (
+      <View>
+        <View style={styles.tallyRow}>
+          <Pressable
+            style={styles.tallyMinus}
+            onPress={() => total > 0 && onCheckIn(habit, -1)}
+          >
+            <Text style={styles.stepButtonText}>−</Text>
+          </Pressable>
+          <Pressable style={styles.tallyPlus} onPress={() => onCheckIn(habit, 1)}>
+            <Text style={styles.tallyPlusText}>+1</Text>
+          </Pressable>
+        </View>
+        <Text style={styles.tallyTotal}>Aujourd'hui : {total}</Text>
+        <Text style={[styles.muted, { textAlign: 'center' }]}>
+          {sinceReminder != null
+            ? `Depuis le dernier rappel : ${sinceReminder} (${relTime(reminderTs)})`
+            : 'Depuis le dernier rappel : —'}
+        </Text>
+      </View>
+    );
+  }
+
   if (habit.type === 'bool') {
     const done = last && Number(last.value) >= 1;
     return (
@@ -251,9 +340,10 @@ function HabitsScreen({ habits, onChange, entries, onEntriesChange }) {
       Alert.alert('Nom requis', "Donne un nom à l'habitude.");
       return;
     }
-    let parsedTarget = 1;
-    if (type === 'count') parsedTarget = Math.max(1, parseInt(target, 10) || 1);
-    if (type === 'scale') parsedTarget = Math.min(5, Math.max(1, parseInt(target, 10) || 3));
+    let parsedTarget = 0; // tally = pas de limite (version simple)
+    if (type === 'bool') parsedTarget = 1;
+    else if (type === 'count') parsedTarget = Math.max(1, parseInt(target, 10) || 1);
+    else if (type === 'scale') parsedTarget = Math.min(5, Math.max(1, parseInt(target, 10) || 3));
 
     const habit = {
       id: uid(),
@@ -296,11 +386,11 @@ function HabitsScreen({ habits, onChange, entries, onEntriesChange }) {
         />
 
         <Text style={styles.label}>Type de check-in</Text>
-        <View style={styles.typeRow}>
-          {['bool', 'count', 'scale'].map((t) => (
+        <View style={styles.typeRowWrap}>
+          {['bool', 'count', 'scale', 'tally'].map((t) => (
             <Pressable
               key={t}
-              style={[styles.typeButton, type === t && styles.typeButtonActive]}
+              style={[styles.typeChip, type === t && styles.typeButtonActive]}
               onPress={() => {
                 setType(t);
                 setTarget(t === 'scale' ? '3' : '1');
@@ -313,7 +403,7 @@ function HabitsScreen({ habits, onChange, entries, onEntriesChange }) {
           ))}
         </View>
 
-        {type !== 'bool' && (
+        {(type === 'count' || type === 'scale') && (
           <>
             <Text style={styles.label}>
               {type === 'count' ? 'Objectif (par jour)' : 'Seuil de réussite (1-5)'}
@@ -325,6 +415,12 @@ function HabitsScreen({ habits, onChange, entries, onEntriesChange }) {
               onChangeText={setTarget}
             />
           </>
+        )}
+
+        {type === 'tally' && (
+          <Text style={styles.muted}>
+            Compteur de consommation : +1 à chaque fois, total cumulé par jour.
+          </Text>
         )}
 
         <Pressable style={styles.bigButton} onPress={addHabit}>
@@ -365,6 +461,37 @@ function StatsScreen({ habits, entries }) {
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
       {habits.map((habit) => {
+        if (habit.type === 'tally') {
+          const totals = lastNDaysTotals(habit.id, entries, 14);
+          const today = totals[totals.length - 1].total;
+          const avg = (
+            totals.reduce((a, b) => a + b.total, 0) / totals.length
+          ).toFixed(1);
+          const max = Math.max(1, ...totals.map((t) => t.total));
+          return (
+            <View key={habit.id} style={styles.card}>
+              <View style={styles.cardHeaderRow}>
+                <View style={[styles.dot, { backgroundColor: habit.color }]} />
+                <Text style={styles.cardTitle}>{habit.name}</Text>
+              </View>
+              <View style={styles.statRow}>
+                <Stat label="Aujourd'hui" value={`${today}`} />
+                <Stat label="Moyenne / jour" value={`${avg}`} />
+              </View>
+              <Text style={styles.label}>14 derniers jours (total / jour)</Text>
+              <View style={styles.chartRow}>
+                {totals.map((t) => {
+                  const h = Math.max(4, Math.round((t.total / max) * 60));
+                  return (
+                    <View key={t.date} style={styles.chartCol}>
+                      <View style={[styles.bar, { height: h, backgroundColor: habit.color }]} />
+                    </View>
+                  );
+                })}
+              </View>
+            </View>
+          );
+        }
         const streak = currentStreak(habit, entries);
         const rate = Math.round(completionRate(habit, entries, 30) * 100);
         const series = lastNDays(habit, entries, 14);
@@ -619,12 +746,51 @@ const styles = StyleSheet.create({
   scaleTextActive: { color: '#fff' },
 
   typeRow: { flexDirection: 'row', gap: 8 },
+  typeRowWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  typeChip: {
+    flexGrow: 1,
+    flexBasis: '45%',
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: '#1f2937',
+    alignItems: 'center',
+  },
   typeButton: {
     flex: 1,
     paddingVertical: 10,
     borderRadius: 10,
     backgroundColor: '#1f2937',
     alignItems: 'center',
+  },
+  tallyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 16,
+    marginBottom: 10,
+  },
+  tallyPlus: {
+    backgroundColor: '#4f8cff',
+    borderRadius: 16,
+    paddingVertical: 18,
+    paddingHorizontal: 48,
+    alignItems: 'center',
+  },
+  tallyPlusText: { color: '#fff', fontSize: 24, fontWeight: '800' },
+  tallyMinus: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#1f2937',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tallyTotal: {
+    color: '#f9fafb',
+    fontSize: 20,
+    fontWeight: '700',
+    textAlign: 'center',
+    marginBottom: 4,
   },
   typeButtonActive: { backgroundColor: '#4f8cff' },
   typeText: { color: '#cbd5e1', fontSize: 13, fontWeight: '600' },
