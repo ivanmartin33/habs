@@ -1,0 +1,108 @@
+# Habits — suivi d'habitudes 100% local (Expo / React Native)
+
+Application mobile **sans serveur** : elle envoie plusieurs notifications locales
+par jour pour demander « où en es-tu », tu fais un check-in rapide, elle calcule
+des statistiques et exporte tout en CSV. Cible **iOS + Android**, testable via
+**Expo Go**.
+
+## Fonctionnalités
+
+- **4 onglets** (navigation par état, sans `react-navigation`) :
+  - **Aujourd'hui** — un check-in par habitude, contrôle adapté au type.
+  - **Habitudes** — ajout (nom + type + objectif), liste, suppression.
+  - **Stats** — série (streak), taux de complétion sur 30 jours, mini-graphe des
+    14 derniers jours.
+  - **Réglages** — nombre de rappels/jour, mode aléatoire ou fixe, export CSV.
+- **3 types d'habitude**, chacune avec son propre check-in :
+  - `bool` → bouton « Marquer comme fait »
+  - `count` → stepper −/+ avec `valeur / objectif`
+  - `scale` → boutons 1 à 5 (seuil de réussite, défaut 3)
+- **Notifications locales** avec **fenêtre glissante** (7 jours d'avance, plafond
+  60 notifications pour rester sous la limite iOS de 64), replanifiées à chaque
+  retour de l'app au premier plan.
+- **Export CSV** via le partage natif.
+- Données persistées en local avec **AsyncStorage** (aucun réseau).
+
+## Modèle de données
+
+```js
+Habit    { id, name, type:'bool'|'count'|'scale', target, color, createdAt }
+Entry    { id, habitId, date:'YYYY-MM-DD', ts, value }   // le dernier check-in du jour fait foi
+Settings { perDay, mode:'random'|'fixed', windowStart, windowEnd, fixedTimes[], horizonDays }
+```
+
+## Structure
+
+```
+App.js                 # UI + navigation par onglets (état)
+index.js               # point d'entrée Expo
+app.json               # config Expo (plugin notifications, permissions, dark mode)
+lib/storage.js         # persistance AsyncStorage
+lib/notifications.js   # permissions, channel Android, planification glissante
+lib/stats.js           # streak, taux de complétion, séries
+lib/export.js          # génération + partage du CSV
+```
+
+## Installation
+
+Ce dépôt contient déjà tout le code source. Deux options :
+
+### Option A — cloner ce dépôt
+
+```bash
+git clone <ce-repo>
+cd habs
+npm install
+npx expo start
+```
+
+### Option B — repartir d'un template neuf
+
+```bash
+# 1. Créer un projet blank (JavaScript)
+npx create-expo-app@latest habits --template blank
+cd habits
+
+# 2. Installer les dépendances alignées sur le SDK
+npx expo install expo-notifications @react-native-async-storage/async-storage \
+  expo-file-system expo-sharing
+
+# 3. Copier les fichiers de ce dépôt :
+#    App.js, index.js, app.json, et le dossier lib/
+
+# 4. Lancer
+npx expo start
+```
+
+## Lancer et tester
+
+```bash
+npx expo start
+```
+
+1. Installe **Expo Go** sur ton téléphone (App Store / Google Play).
+2. Scanne le **QR code** affiché dans le terminal.
+3. Accepte la demande de **permission notifications** au démarrage.
+
+> ⚠️ **Teste sur un vrai téléphone.** Les notifications locales programmées ne
+> fonctionnent pas de façon fiable sur les simulateurs/émulateurs. Sur iOS, les
+> notifications ne s'affichent pas quand l'app est au premier plan : mets l'app
+> en arrière-plan pour les voir arriver.
+
+## Notes techniques
+
+- **Handler** : `setNotificationHandler` avec `shouldShowBanner`, `shouldShowList`
+  et `shouldPlaySound` à `true` (API actuelle de `expo-notifications`).
+- **Trigger par date** :
+  `trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date }`.
+- **Android** : le channel `reminders` (importance `HIGH`) est créé **avant**
+  toute planification.
+- **Fenêtre glissante** : `cancelAllScheduledNotificationsAsync()` puis
+  replanification de `horizonDays` jours (plafond 60), à chaque passage au
+  premier plan (`AppState`).
+- **Mode aléatoire** : la plage `windowStart`–`windowEnd` est découpée en
+  `perDay` créneaux ; une heure est tirée au hasard dans chaque créneau pour
+  éviter les rappels collés. **Mode fixe** : utilise `fixedTimes`.
+- **Export** : `expo-file-system` (import `legacy` pour `documentDirectory` +
+  `writeAsStringAsync`) puis `expo-sharing`. Colonnes :
+  `date, heure, habitude, type, valeur, timestamp`.

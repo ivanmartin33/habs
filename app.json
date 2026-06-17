@@ -1,0 +1,30 @@
+{
+  "expo": {
+    "name": "Habits",
+    "slug": "habits",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "scheme": "habits",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.habits.app"
+    },
+    "android": {
+      "package": "com.habits.app",
+      "permissions": [
+        "SCHEDULE_EXACT_ALARM",
+        "POST_NOTIFICATIONS",
+        "RECEIVE_BOOT_COMPLETED"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "color": "#4f8cff"
+        }
+      ]
+    ]
+  }
+}
