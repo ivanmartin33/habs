@@ -91,6 +91,7 @@ export default function App() {
     const recv = Notifications.addNotificationReceivedListener(mark);
     const resp = Notifications.addNotificationResponseReceivedListener((response) => {
       mark();
+      setTab('today'); // ouvrir sur Aujourd'hui pour voir le check-in appliqué
       const action = response.actionIdentifier;
       const habitId = response?.notification?.request?.content?.data?.habitId;
       const inc =
