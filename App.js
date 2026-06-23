@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Animated,
   AppState,
   Alert,
   Pressable,
@@ -10,6 +11,8 @@ import {
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import { BlurView } from 'expo-blur';
+import { Ionicons } from '@expo/vector-icons';
 import * as Notifications from 'expo-notifications';
 
 import {
@@ -40,13 +43,34 @@ import {
 import { rescheduleAll, setupNotifications } from './lib/notifications';
 import { exportCSV } from './lib/export';
 
-const TABS = [
-  { key: 'today', label: "Aujourd'hui" },
-  { key: 'habits', label: 'Habitudes' },
-  { key: 'stats', label: 'Stats' },
-  { key: 'settings', label: 'Réglages' },
-];
+/* ============================== THEME ============================== */
+// Palette sobre, inspirée du dark mode iOS.
+const ACCENT = '#0a84ff';
+const BG = '#000000';
+const SURFACE = '#1c1c1e';
+const SURFACE2 = '#2c2c2e';
+const SEP = 'rgba(84,84,88,0.55)';
+const LABEL = '#ffffff';
+const LABEL2 = 'rgba(235,235,245,0.6)';
+const DANGER = '#ff453a';
+const SUCCESS = '#30d158';
 
+const SCROLL_TOP = 132;
+const SCROLL_BOTTOM = 104;
+
+const JOURS = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
+const MOIS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
+function frDateLabel(d) {
+  const s = `${JOURS[d.getDay()]} ${d.getDate()} ${MOIS[d.getMonth()]}`;
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+const TABS = [
+  { key: 'today', label: "Aujourd'hui", icon: 'today', iconOutline: 'today-outline' },
+  { key: 'habits', label: 'Habitudes', icon: 'list', iconOutline: 'list-outline' },
+  { key: 'stats', label: 'Stats', icon: 'stats-chart', iconOutline: 'stats-chart-outline' },
+  { key: 'settings', label: 'Réglages', icon: 'settings', iconOutline: 'settings-outline' },
+];
 const TYPE_LABELS = { bool: 'Oui / Non', count: 'Compteur', scale: 'Échelle 1-5', tally: 'Consommation' };
 
 export default function App() {
@@ -57,11 +81,16 @@ export default function App() {
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [lastReminderAt, setLastReminderAt] = useState(0);
 
-  // Keep latest values for the AppState / notification listeners without re-subscribing.
   const latest = useRef({ habits, settings, entries });
   latest.current = { habits, settings, entries };
 
-  // Initial load + permission request + first schedule.
+  // Animation de transition entre onglets (fondu + léger glissement).
+  const anim = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    anim.setValue(0);
+    Animated.timing(anim, { toValue: 1, duration: 240, useNativeDriver: true }).start();
+  }, [tab]);
+
   useEffect(() => {
     (async () => {
       const [h, e, s, r] = await Promise.all([
@@ -142,13 +171,7 @@ export default function App() {
 
   const checkIn = useCallback(
     (habit, value) => {
-      const entry = {
-        id: uid(),
-        habitId: habit.id,
-        date: todayKey(),
-        ts: Date.now(),
-        value,
-      };
+      const entry = { id: uid(), habitId: habit.id, date: todayKey(), ts: Date.now(), value };
       persistEntries([...entries, entry]);
     },
     [entries, persistEntries]
@@ -163,45 +186,50 @@ export default function App() {
     );
   }
 
+  const animStyle = {
+    opacity: anim,
+    transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [10, 0] }) }],
+  };
+
   return (
     <View style={styles.app}>
       <StatusBar style="light" />
-      <View style={styles.header}>
-        <Text style={styles.title}>{TABS.find((t) => t.key === tab).label}</Text>
-      </View>
 
-      <View style={styles.body}>
+      <Animated.View style={[styles.body, animStyle]}>
         {tab === 'today' && (
-          <TodayScreen
-            habits={habits}
-            entries={entries}
-            lastReminderAt={lastReminderAt}
-            onCheckIn={checkIn}
-          />
+          <TodayScreen habits={habits} entries={entries} lastReminderAt={lastReminderAt} onCheckIn={checkIn} />
         )}
         {tab === 'habits' && (
           <HabitsScreen habits={habits} onChange={persistHabits} entries={entries} onEntriesChange={persistEntries} />
         )}
         {tab === 'stats' && <StatsScreen habits={habits} entries={entries} />}
         {tab === 'settings' && (
-          <SettingsScreen
-            settings={settings}
-            onChange={persistSettings}
-            habits={habits}
-            entries={entries}
-          />
+          <SettingsScreen settings={settings} onChange={persistSettings} habits={habits} entries={entries} />
         )}
-      </View>
+      </Animated.View>
 
-      <View style={styles.tabBar}>
-        {TABS.map((t) => (
-          <Pressable key={t.key} style={styles.tabButton} onPress={() => setTab(t.key)}>
-            <Text style={[styles.tabLabel, tab === t.key && styles.tabLabelActive]}>
-              {t.label}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
+      {/* En-tête en verre flouté */}
+      <BlurView intensity={50} tint="dark" experimentalBlurMethod="dimezisBlurView" style={styles.header}>
+        <Text style={styles.title}>{TABS.find((t) => t.key === tab).label}</Text>
+        {tab === 'today' && <Text style={styles.headerSubtitle}>{frDateLabel(new Date())}</Text>}
+      </BlurView>
+
+      {/* Barre d'onglets en verre flouté */}
+      <BlurView intensity={50} tint="dark" experimentalBlurMethod="dimezisBlurView" style={styles.tabBar}>
+        {TABS.map((t) => {
+          const active = tab === t.key;
+          return (
+            <Pressable
+              key={t.key}
+              style={({ pressed }) => [styles.tabButton, pressed && styles.pressed]}
+              onPress={() => setTab(t.key)}
+            >
+              <Ionicons name={active ? t.icon : t.iconOutline} size={24} color={active ? ACCENT : LABEL2} />
+              <Text style={[styles.tabLabel, active && styles.tabLabelActive]}>{t.label}</Text>
+            </Pressable>
+          );
+        })}
+      </BlurView>
     </View>
   );
 }
@@ -210,15 +238,11 @@ export default function App() {
 
 function TodayScreen({ habits, entries, lastReminderAt, onCheckIn }) {
   if (habits.length === 0) {
-    return (
-      <EmptyState text="Aucune habitude. Ajoute-en dans l'onglet « Habitudes »." />
-    );
+    return <EmptyState text="Aucune habitude. Ajoute-en dans l'onglet « Habitudes »." />;
   }
-
   const key = todayKey();
-
   return (
-    <ScrollView contentContainerStyle={styles.scroll}>
+    <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
       {habits.map((habit) => {
         const last = lastEntryForDay(entries, habit.id, key);
         const done = habit.type !== 'tally' && isDayCompleted(habit, entries, key);
@@ -227,7 +251,7 @@ function TodayScreen({ habits, entries, lastReminderAt, onCheckIn }) {
             <View style={styles.cardHeaderRow}>
               <View style={[styles.dot, { backgroundColor: habit.color }]} />
               <Text style={styles.cardTitle}>{habit.name}</Text>
-              {done && <Text style={styles.badgeDone}>✓</Text>}
+              {done && <Ionicons name="checkmark-circle" size={22} color={SUCCESS} style={{ marginLeft: 'auto' }} />}
             </View>
             <TodayControl
               habit={habit}
@@ -249,21 +273,21 @@ function TodayControl({ habit, last, entries, lastReminderAt, onCheckIn }) {
     const total = Math.max(0, dayTotal(entries, habit.id, key));
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
-    const reminderTs =
-      lastReminderAt && lastReminderAt >= startOfDay.getTime() ? lastReminderAt : 0;
-    const sinceReminder = reminderTs
-      ? Math.max(0, sumSince(entries, habit.id, reminderTs))
-      : null;
+    const reminderTs = lastReminderAt && lastReminderAt >= startOfDay.getTime() ? lastReminderAt : 0;
+    const sinceReminder = reminderTs ? Math.max(0, sumSince(entries, habit.id, reminderTs)) : null;
     return (
       <View>
         <View style={styles.tallyRow}>
           <Pressable
-            style={styles.tallyMinus}
+            style={({ pressed }) => [styles.circleBtn, pressed && styles.pressed]}
             onPress={() => total > 0 && onCheckIn(habit, -1)}
           >
-            <Text style={styles.stepButtonText}>−</Text>
+            <Ionicons name="remove" size={26} color={LABEL} />
           </Pressable>
-          <Pressable style={styles.tallyPlus} onPress={() => onCheckIn(habit, 1)}>
+          <Pressable
+            style={({ pressed }) => [styles.tallyPlus, pressed && styles.pressed]}
+            onPress={() => onCheckIn(habit, 1)}
+          >
             <Text style={styles.tallyPlusText}>+1</Text>
           </Pressable>
         </View>
@@ -281,44 +305,40 @@ function TodayControl({ habit, last, entries, lastReminderAt, onCheckIn }) {
     const done = last && Number(last.value) >= 1;
     return (
       <Pressable
-        style={[styles.bigButton, done && styles.bigButtonDone]}
+        style={({ pressed }) => [styles.bigButton, done && styles.bigButtonDone, pressed && styles.pressed]}
         onPress={() => onCheckIn(habit, 1)}
       >
-        <Text style={styles.bigButtonText}>
-          {done ? 'Fait ✓ (re-marquer)' : 'Marquer comme fait'}
-        </Text>
+        <Text style={styles.bigButtonText}>{done ? 'Fait ✓ (re-marquer)' : 'Marquer comme fait'}</Text>
       </Pressable>
     );
   }
-
   if (habit.type === 'count') {
     const value = last ? Number(last.value) : 0;
     return (
       <View style={styles.stepperRow}>
         <Pressable
-          style={styles.stepButton}
+          style={({ pressed }) => [styles.circleBtn, pressed && styles.pressed]}
           onPress={() => onCheckIn(habit, Math.max(0, value - 1))}
         >
-          <Text style={styles.stepButtonText}>−</Text>
+          <Ionicons name="remove" size={26} color={LABEL} />
         </Pressable>
-        <Text style={styles.stepValue}>
-          {value} / {habit.target || 1}
-        </Text>
-        <Pressable style={styles.stepButton} onPress={() => onCheckIn(habit, value + 1)}>
-          <Text style={styles.stepButtonText}>+</Text>
+        <Text style={styles.stepValue}>{value} / {habit.target || 1}</Text>
+        <Pressable
+          style={({ pressed }) => [styles.circleBtn, pressed && styles.pressed]}
+          onPress={() => onCheckIn(habit, value + 1)}
+        >
+          <Ionicons name="add" size={26} color={LABEL} />
         </Pressable>
       </View>
     );
   }
-
-  // scale 1..5
   const value = last ? Number(last.value) : 0;
   return (
     <View style={styles.scaleRow}>
       {[1, 2, 3, 4, 5].map((n) => (
         <Pressable
           key={n}
-          style={[styles.scaleButton, value === n && styles.scaleButtonActive]}
+          style={({ pressed }) => [styles.scaleButton, value === n && styles.scaleButtonActive, pressed && styles.pressed]}
           onPress={() => onCheckIn(habit, n)}
         >
           <Text style={[styles.scaleText, value === n && styles.scaleTextActive]}>{n}</Text>
@@ -345,7 +365,6 @@ function HabitsScreen({ habits, onChange, entries, onEntriesChange }) {
     if (type === 'bool') parsedTarget = 1;
     else if (type === 'count') parsedTarget = Math.max(1, parseInt(target, 10) || 1);
     else if (type === 'scale') parsedTarget = Math.min(5, Math.max(1, parseInt(target, 10) || 3));
-
     const habit = {
       id: uid(),
       name: trimmed,
@@ -375,62 +394,47 @@ function HabitsScreen({ habits, onChange, entries, onEntriesChange }) {
   };
 
   return (
-    <ScrollView contentContainerStyle={styles.scroll}>
+    <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
       <View style={styles.card}>
         <Text style={styles.label}>Nom</Text>
         <TextInput
           style={styles.input}
           placeholder="Ex : Méditer, Boire de l'eau…"
-          placeholderTextColor="#6b7280"
+          placeholderTextColor={LABEL2}
           value={name}
           onChangeText={setName}
         />
-
         <Text style={styles.label}>Type de check-in</Text>
         <View style={styles.typeRowWrap}>
           {['bool', 'count', 'scale', 'tally'].map((t) => (
             <Pressable
               key={t}
-              style={[styles.typeChip, type === t && styles.typeButtonActive]}
+              style={({ pressed }) => [styles.typeChip, type === t && styles.chipActive, pressed && styles.pressed]}
               onPress={() => {
                 setType(t);
                 setTarget(t === 'scale' ? '3' : '1');
               }}
             >
-              <Text style={[styles.typeText, type === t && styles.typeTextActive]}>
-                {TYPE_LABELS[t]}
-              </Text>
+              <Text style={[styles.typeText, type === t && styles.typeTextActive]}>{TYPE_LABELS[t]}</Text>
             </Pressable>
           ))}
         </View>
-
         {(type === 'count' || type === 'scale') && (
           <>
-            <Text style={styles.label}>
-              {type === 'count' ? 'Objectif (par jour)' : 'Seuil de réussite (1-5)'}
-            </Text>
-            <TextInput
-              style={styles.input}
-              keyboardType="number-pad"
-              value={target}
-              onChangeText={setTarget}
-            />
+            <Text style={styles.label}>{type === 'count' ? 'Objectif (par jour)' : 'Seuil de réussite (1-5)'}</Text>
+            <TextInput style={styles.input} keyboardType="number-pad" value={target} onChangeText={setTarget} />
           </>
         )}
-
         {type === 'tally' && (
-          <Text style={styles.muted}>
-            Compteur de consommation : +1 à chaque fois, total cumulé par jour.
-          </Text>
+          <Text style={styles.muted}>Compteur de consommation : +1 à chaque fois, total cumulé par jour.</Text>
         )}
-
-        <Pressable style={styles.bigButton} onPress={addHabit}>
+        <Pressable style={({ pressed }) => [styles.bigButton, pressed && styles.pressed]} onPress={addHabit}>
           <Text style={styles.bigButtonText}>Ajouter l'habitude</Text>
         </Pressable>
       </View>
 
       {habits.length === 0 ? (
-        <EmptyState text="Aucune habitude pour l'instant." />
+        <EmptyState text="Aucune habitude pour l'instant." inline />
       ) : (
         habits.map((habit) => (
           <View key={habit.id} style={styles.rowCard}>
@@ -438,12 +442,11 @@ function HabitsScreen({ habits, onChange, entries, onEntriesChange }) {
             <View style={{ flex: 1 }}>
               <Text style={styles.cardTitle}>{habit.name}</Text>
               <Text style={styles.muted}>
-                {TYPE_LABELS[habit.type]}
-                {habit.type !== 'bool' ? ` · cible ${habit.target}` : ''}
+                {TYPE_LABELS[habit.type]}{habit.type === 'count' || habit.type === 'scale' ? ` · cible ${habit.target}` : ''}
               </Text>
             </View>
-            <Pressable onPress={() => removeHabit(habit)} hitSlop={10}>
-              <Text style={styles.delete}>Suppr.</Text>
+            <Pressable onPress={() => removeHabit(habit)} hitSlop={10} style={({ pressed }) => pressed && styles.pressed}>
+              <Ionicons name="trash-outline" size={22} color={DANGER} />
             </Pressable>
           </View>
         ))
@@ -458,16 +461,13 @@ function StatsScreen({ habits, entries }) {
   if (habits.length === 0) {
     return <EmptyState text="Ajoute des habitudes pour voir des statistiques." />;
   }
-
   return (
-    <ScrollView contentContainerStyle={styles.scroll}>
+    <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
       {habits.map((habit) => {
         if (habit.type === 'tally') {
           const totals = lastNDaysTotals(habit.id, entries, 14);
           const today = totals[totals.length - 1].total;
-          const avg = (
-            totals.reduce((a, b) => a + b.total, 0) / totals.length
-          ).toFixed(1);
+          const avg = (totals.reduce((a, b) => a + b.total, 0) / totals.length).toFixed(1);
           const max = Math.max(1, ...totals.map((t) => t.total));
           return (
             <View key={habit.id} style={styles.card}>
@@ -532,12 +532,7 @@ function MiniChart({ series, color }) {
         const h = Math.max(4, Math.round((d.value / max) * 60));
         return (
           <View key={d.date} style={styles.chartCol}>
-            <View
-              style={[
-                styles.bar,
-                { height: h, backgroundColor: d.done ? color : '#374151' },
-              ]}
-            />
+            <View style={[styles.bar, { height: h, backgroundColor: d.done ? color : SURFACE2 }]} />
           </View>
         );
       })}
@@ -563,39 +558,34 @@ function SettingsScreen({ settings, onChange, habits, entries }) {
   };
 
   return (
-    <ScrollView contentContainerStyle={styles.scroll}>
+    <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
       <View style={styles.card}>
         <Text style={styles.label}>Rappels par jour</Text>
         <View style={styles.stepperRow}>
           <Pressable
-            style={styles.stepButton}
+            style={({ pressed }) => [styles.circleBtn, pressed && styles.pressed]}
             onPress={() => set({ perDay: Math.max(1, settings.perDay - 1) })}
           >
-            <Text style={styles.stepButtonText}>−</Text>
+            <Ionicons name="remove" size={26} color={LABEL} />
           </Pressable>
           <Text style={styles.stepValue}>{settings.perDay}</Text>
           <Pressable
-            style={styles.stepButton}
+            style={({ pressed }) => [styles.circleBtn, pressed && styles.pressed]}
             onPress={() => set({ perDay: Math.min(12, settings.perDay + 1) })}
           >
-            <Text style={styles.stepButtonText}>+</Text>
+            <Ionicons name="add" size={26} color={LABEL} />
           </Pressable>
         </View>
 
         <Text style={styles.label}>Mode</Text>
-        <View style={styles.typeRow}>
-          {[
-            { k: 'random', l: 'Aléatoire' },
-            { k: 'fixed', l: 'Fixe' },
-          ].map((m) => (
+        <View style={styles.segment}>
+          {[{ k: 'random', l: 'Aléatoire' }, { k: 'fixed', l: 'Fixe' }].map((m) => (
             <Pressable
               key={m.k}
-              style={[styles.typeButton, settings.mode === m.k && styles.typeButtonActive]}
+              style={({ pressed }) => [styles.segmentItem, settings.mode === m.k && styles.segmentItemActive, pressed && styles.pressed]}
               onPress={() => set({ mode: m.k })}
             >
-              <Text style={[styles.typeText, settings.mode === m.k && styles.typeTextActive]}>
-                {m.l}
-              </Text>
+              <Text style={[styles.typeText, settings.mode === m.k && styles.typeTextActive]}>{m.l}</Text>
             </Pressable>
           ))}
         </View>
@@ -608,7 +598,7 @@ function SettingsScreen({ settings, onChange, habits, entries }) {
                 style={styles.input}
                 value={settings.windowStart}
                 placeholder="09:00"
-                placeholderTextColor="#6b7280"
+                placeholderTextColor={LABEL2}
                 onChangeText={(v) => set({ windowStart: v })}
               />
             </View>
@@ -618,7 +608,7 @@ function SettingsScreen({ settings, onChange, habits, entries }) {
                 style={styles.input}
                 value={settings.windowEnd}
                 placeholder="21:00"
-                placeholderTextColor="#6b7280"
+                placeholderTextColor={LABEL2}
                 onChangeText={(v) => set({ windowEnd: v })}
               />
             </View>
@@ -630,15 +620,8 @@ function SettingsScreen({ settings, onChange, habits, entries }) {
               style={styles.input}
               value={(settings.fixedTimes || []).join(', ')}
               placeholder="09:00, 13:00, 19:00"
-              placeholderTextColor="#6b7280"
-              onChangeText={(v) =>
-                set({
-                  fixedTimes: v
-                    .split(',')
-                    .map((s) => s.trim())
-                    .filter(Boolean),
-                })
-              }
+              placeholderTextColor={LABEL2}
+              onChangeText={(v) => set({ fixedTimes: v.split(',').map((s) => s.trim()).filter(Boolean) })}
             />
           </>
         )}
@@ -649,12 +632,11 @@ function SettingsScreen({ settings, onChange, habits, entries }) {
       </View>
 
       <View style={styles.card}>
-        <Pressable style={styles.bigButton} onPress={onExport}>
+        <Pressable style={({ pressed }) => [styles.bigButton, pressed && styles.pressed]} onPress={onExport}>
+          <Ionicons name="share-outline" size={18} color="#fff" style={{ marginRight: 8 }} />
           <Text style={styles.bigButtonText}>Exporter en CSV</Text>
         </Pressable>
-        <Text style={styles.muted}>
-          {entries.length} check-in(s) enregistré(s).
-        </Text>
+        <Text style={[styles.muted, { marginTop: 10 }]}>{entries.length} check-in(s) enregistré(s).</Text>
       </View>
     </ScrollView>
   );
@@ -662,30 +644,45 @@ function SettingsScreen({ settings, onChange, habits, entries }) {
 
 /* ----------------------------- Shared ----------------------------- */
 
-function EmptyState({ text }) {
+function EmptyState({ text, inline }) {
   return (
-    <View style={[styles.center, { flex: 1, padding: 32 }]}>
-      <Text style={[styles.muted, { textAlign: 'center' }]}>{text}</Text>
+    <View style={[inline ? styles.emptyInline : styles.emptyFull]}>
+      <Ionicons name="leaf-outline" size={40} color={LABEL2} style={{ marginBottom: 12 }} />
+      <Text style={[styles.muted, { textAlign: 'center', fontSize: 15 }]}>{text}</Text>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  app: { flex: 1, backgroundColor: '#0b0f17', paddingTop: 48 },
+  app: { flex: 1, backgroundColor: BG },
   center: { alignItems: 'center', justifyContent: 'center' },
-  header: { paddingHorizontal: 20, paddingBottom: 12 },
-  title: { color: '#f9fafb', fontSize: 28, fontWeight: '700' },
   body: { flex: 1 },
-  scroll: { padding: 16, paddingBottom: 32 },
+  scroll: { paddingHorizontal: 16, paddingTop: SCROLL_TOP, paddingBottom: SCROLL_BOTTOM },
+
+  header: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    paddingTop: 64,
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: SEP,
+    backgroundColor: 'rgba(0,0,0,0.2)',
+    overflow: 'hidden',
+  },
+  title: { color: LABEL, fontSize: 34, fontWeight: '700', letterSpacing: 0.35 },
+  headerSubtitle: { color: LABEL2, fontSize: 14, marginTop: 2 },
 
   card: {
-    backgroundColor: '#151b27',
+    backgroundColor: SURFACE,
     borderRadius: 16,
     padding: 16,
     marginBottom: 14,
   },
   rowCard: {
-    backgroundColor: '#151b27',
+    backgroundColor: SURFACE,
     borderRadius: 16,
     padding: 16,
     marginBottom: 10,
@@ -693,121 +690,67 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 12,
   },
-  cardHeaderRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 12, gap: 10 },
-  cardTitle: { color: '#f9fafb', fontSize: 18, fontWeight: '600', flexShrink: 1 },
-  dot: { width: 12, height: 12, borderRadius: 6 },
-  badgeDone: { color: '#34d399', fontSize: 18, marginLeft: 'auto', fontWeight: '700' },
+  cardHeaderRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 14, gap: 10 },
+  cardTitle: { color: LABEL, fontSize: 17, fontWeight: '600', flexShrink: 1 },
+  dot: { width: 10, height: 10, borderRadius: 5 },
 
-  muted: { color: '#9ca3af', fontSize: 13 },
-  label: { color: '#cbd5e1', fontSize: 14, marginTop: 8, marginBottom: 6, fontWeight: '500' },
+  muted: { color: LABEL2, fontSize: 13 },
+  label: { color: LABEL2, fontSize: 13, marginTop: 10, marginBottom: 6, fontWeight: '500' },
 
   input: {
-    backgroundColor: '#0b0f17',
-    borderColor: '#2a3344',
-    borderWidth: 1,
+    backgroundColor: SURFACE2,
     borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    color: '#f9fafb',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    color: LABEL,
     fontSize: 16,
   },
 
   bigButton: {
-    backgroundColor: '#4f8cff',
-    borderRadius: 12,
-    paddingVertical: 14,
+    backgroundColor: ACCENT,
+    borderRadius: 14,
+    paddingVertical: 15,
     alignItems: 'center',
-    marginTop: 12,
+    justifyContent: 'center',
+    flexDirection: 'row',
+    marginTop: 14,
   },
   bigButtonDone: { backgroundColor: '#1f6f4f' },
   bigButtonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
 
-  stepperRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 24 },
-  stepButton: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: '#1f2937',
-    alignItems: 'center',
-    justifyContent: 'center',
+  pressed: { opacity: 0.55 },
+
+  stepperRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 28, marginTop: 4 },
+  circleBtn: {
+    width: 54, height: 54, borderRadius: 27, backgroundColor: SURFACE2,
+    alignItems: 'center', justifyContent: 'center',
   },
-  stepButtonText: { color: '#f9fafb', fontSize: 26, fontWeight: '700' },
-  stepValue: { color: '#f9fafb', fontSize: 20, fontWeight: '600', minWidth: 90, textAlign: 'center' },
+  stepValue: { color: LABEL, fontSize: 22, fontWeight: '600', minWidth: 90, textAlign: 'center' },
 
   scaleRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 8 },
-  scaleButton: {
-    flex: 1,
-    paddingVertical: 14,
-    borderRadius: 10,
-    backgroundColor: '#1f2937',
-    alignItems: 'center',
-  },
-  scaleButtonActive: { backgroundColor: '#4f8cff' },
-  scaleText: { color: '#cbd5e1', fontSize: 18, fontWeight: '700' },
+  scaleButton: { flex: 1, paddingVertical: 14, borderRadius: 12, backgroundColor: SURFACE2, alignItems: 'center' },
+  scaleButtonActive: { backgroundColor: ACCENT },
+  scaleText: { color: LABEL, fontSize: 18, fontWeight: '700' },
   scaleTextActive: { color: '#fff' },
 
-  typeRow: { flexDirection: 'row', gap: 8 },
   typeRowWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  typeChip: {
-    flexGrow: 1,
-    flexBasis: '45%',
-    paddingVertical: 10,
-    borderRadius: 10,
-    backgroundColor: '#1f2937',
-    alignItems: 'center',
-  },
-  typeButton: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 10,
-    backgroundColor: '#1f2937',
-    alignItems: 'center',
-  },
-  tallyRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 16,
-    marginBottom: 10,
-  },
-  tallyPlus: {
-    backgroundColor: '#4f8cff',
-    borderRadius: 16,
-    paddingVertical: 18,
-    paddingHorizontal: 48,
-    alignItems: 'center',
-  },
-  tallyPlusText: { color: '#fff', fontSize: 24, fontWeight: '800' },
-  tallyMinus: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: '#1f2937',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  tallyTotal: {
-    color: '#f9fafb',
-    fontSize: 20,
-    fontWeight: '700',
-    textAlign: 'center',
-    marginBottom: 4,
-  },
-  typeButtonActive: { backgroundColor: '#4f8cff' },
-  typeText: { color: '#cbd5e1', fontSize: 13, fontWeight: '600' },
+  typeChip: { flexGrow: 1, flexBasis: '45%', paddingVertical: 11, borderRadius: 10, backgroundColor: SURFACE2, alignItems: 'center' },
+  chipActive: { backgroundColor: ACCENT },
+  typeText: { color: LABEL, fontSize: 14, fontWeight: '600' },
   typeTextActive: { color: '#fff' },
 
-  delete: { color: '#f87171', fontWeight: '600' },
+  segment: { flexDirection: 'row', backgroundColor: SURFACE2, borderRadius: 10, padding: 3, gap: 3 },
+  segmentItem: { flex: 1, paddingVertical: 9, borderRadius: 8, alignItems: 'center' },
+  segmentItemActive: { backgroundColor: ACCENT },
+
+  tallyRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 18, marginBottom: 12 },
+  tallyPlus: { backgroundColor: ACCENT, borderRadius: 16, paddingVertical: 18, paddingHorizontal: 52, alignItems: 'center' },
+  tallyPlusText: { color: '#fff', fontSize: 24, fontWeight: '800' },
+  tallyTotal: { color: LABEL, fontSize: 20, fontWeight: '700', textAlign: 'center', marginBottom: 4 },
 
   statRow: { flexDirection: 'row', gap: 12, marginBottom: 8 },
-  statBox: {
-    flex: 1,
-    backgroundColor: '#0b0f17',
-    borderRadius: 12,
-    padding: 14,
-    alignItems: 'center',
-  },
-  statValue: { color: '#f9fafb', fontSize: 22, fontWeight: '700', marginBottom: 2 },
+  statBox: { flex: 1, backgroundColor: SURFACE2, borderRadius: 12, padding: 14, alignItems: 'center' },
+  statValue: { color: LABEL, fontSize: 22, fontWeight: '700', marginBottom: 2 },
 
   chartRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 4, height: 70, marginTop: 6 },
   chartCol: { flex: 1, justifyContent: 'flex-end', alignItems: 'center' },
@@ -816,15 +759,23 @@ const styles = StyleSheet.create({
   inlineRow: { flexDirection: 'row', gap: 12 },
   inlineCol: { flex: 1 },
 
+  emptyFull: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, paddingTop: SCROLL_TOP },
+  emptyInline: { alignItems: 'center', justifyContent: 'center', padding: 32 },
+
   tabBar: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
     flexDirection: 'row',
-    borderTopColor: '#1f2937',
-    borderTopWidth: 1,
-    backgroundColor: '#0b0f17',
-    paddingBottom: 24,
-    paddingTop: 8,
+    paddingTop: 10,
+    paddingBottom: 28,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: SEP,
+    backgroundColor: 'rgba(0,0,0,0.2)',
+    overflow: 'hidden',
   },
-  tabButton: { flex: 1, alignItems: 'center', paddingVertical: 6 },
-  tabLabel: { color: '#6b7280', fontSize: 12, fontWeight: '600' },
-  tabLabelActive: { color: '#4f8cff' },
+  tabButton: { flex: 1, alignItems: 'center', gap: 3, paddingVertical: 2 },
+  tabLabel: { color: LABEL2, fontSize: 10, fontWeight: '600' },
+  tabLabelActive: { color: ACCENT },
 });
