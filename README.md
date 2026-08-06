@@ -51,6 +51,9 @@ lib/storage.js         # persistance AsyncStorage
 lib/notifications.js   # permissions, channel Android, planification glissante
 lib/stats.js           # streak, taux de complétion, séries
 lib/export.js          # génération + partage du CSV
+.claude/skills/        # skills officiels Expo (github.com/expo/skills) pour
+                       # les sessions Claude Code : expo-native-ui,
+                       # expo-project-structure, expo-dev-client, expo-upgrade
 ```
 
 ## Installation
@@ -101,6 +104,11 @@ npx expo start
 
 ## Notes techniques
 
+- **Liquid Glass (iOS 26+)** : l'en-tête et la barre d'onglets flottante
+  utilisent `expo-glass-effect` (`GlassView`, introduit avec le SDK 54) quand
+  `isLiquidGlassAvailable()` est vrai — vrai verre système, y compris dans
+  Expo Go. Fallback automatique sur `expo-blur` (Android, iOS < 26, ou
+  « Réduire la transparence » activé).
 - **Handler** : `setNotificationHandler` avec `shouldShowBanner`, `shouldShowList`
   et `shouldPlaySound` à `true` (API actuelle de `expo-notifications`).
 - **Trigger par date** :

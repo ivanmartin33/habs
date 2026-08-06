@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { BlurView } from 'expo-blur';
+import { GlassView, isLiquidGlassAvailable } from 'expo-glass-effect';
 import { Ionicons } from '@expo/vector-icons';
 import * as Notifications from 'expo-notifications';
 
@@ -58,7 +59,7 @@ const DANGER = '#ff453a';
 const SUCCESS = '#30d158';
 
 const SCROLL_TOP = 132;
-const SCROLL_BOTTOM = 104;
+const SCROLL_BOTTOM = 116; // barre flottante (bottom 28 + hauteur ~56) + marge
 
 const JOURS = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
 const MOIS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
@@ -82,6 +83,32 @@ function dim(hex, alpha) {
   const g = parseInt(hex.slice(3, 5), 16);
   const b = parseInt(hex.slice(5, 7), 16);
   return `rgba(${r},${g},${b},${alpha})`;
+}
+
+// Liquid Glass (iOS 26+, SDK 54+). try/catch : un client Expo Go trop ancien
+// sans le module natif ne doit pas faire crasher l'app au démarrage.
+let LIQUID_GLASS = false;
+try {
+  LIQUID_GLASS = isLiquidGlassAvailable();
+} catch (e) {
+  LIQUID_GLASS = false;
+}
+
+// En-tête / barre d'onglets : vrai Liquid Glass quand dispo, sinon flou
+// expo-blur (Android, iOS < 26, "Réduire la transparence" activé…).
+function GlassChrome({ style, fallbackStyle, isInteractive, children }) {
+  if (LIQUID_GLASS) {
+    return (
+      <GlassView glassEffectStyle="regular" colorScheme="dark" isInteractive={isInteractive} style={style}>
+        {children}
+      </GlassView>
+    );
+  }
+  return (
+    <BlurView intensity={50} tint="dark" experimentalBlurMethod="dimezisBlurView" style={[style, fallbackStyle]}>
+      {children}
+    </BlurView>
+  );
 }
 
 const TABS = [
@@ -229,14 +256,14 @@ export default function App() {
         )}
       </Animated.View>
 
-      {/* En-tête en verre flouté */}
-      <BlurView intensity={50} tint="dark" experimentalBlurMethod="dimezisBlurView" style={styles.header}>
+      {/* En-tête en verre (Liquid Glass si dispo, sinon flou) */}
+      <GlassChrome style={styles.header} fallbackStyle={styles.headerFallback}>
         <Text style={styles.title}>{TABS.find((t) => t.key === tab).label}</Text>
         {tab === 'today' && <Text style={styles.headerSubtitle}>{frDateLabel(new Date())}</Text>}
-      </BlurView>
+      </GlassChrome>
 
-      {/* Barre d'onglets en verre flouté */}
-      <BlurView intensity={50} tint="dark" experimentalBlurMethod="dimezisBlurView" style={styles.tabBar}>
+      {/* Barre d'onglets flottante en verre, façon iOS 26 */}
+      <GlassChrome style={styles.tabBar} fallbackStyle={styles.tabBarFallback} isInteractive>
         {TABS.map((t) => {
           const active = tab === t.key;
           return (
@@ -250,7 +277,7 @@ export default function App() {
             </Pressable>
           );
         })}
-      </BlurView>
+      </GlassChrome>
     </View>
   );
 }
@@ -853,6 +880,8 @@ const styles = StyleSheet.create({
     paddingTop: 64,
     paddingHorizontal: 20,
     paddingBottom: 12,
+  },
+  headerFallback: {
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: SEP,
     backgroundColor: 'rgba(0,0,0,0.2)',
@@ -1000,16 +1029,19 @@ const styles = StyleSheet.create({
 
   tabBar: {
     position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
+    bottom: 28,
+    left: 16,
+    right: 16,
     flexDirection: 'row',
-    paddingTop: 10,
-    paddingBottom: 28,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: SEP,
-    backgroundColor: 'rgba(0,0,0,0.2)',
+    borderRadius: 32,
+    paddingVertical: 8,
+    paddingHorizontal: 6,
     overflow: 'hidden',
+  },
+  tabBarFallback: {
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: SEP,
   },
   tabButton: { flex: 1, alignItems: 'center', gap: 3, paddingVertical: 2 },
   tabLabel: { color: LABEL2, fontSize: 10, fontWeight: '600' },
