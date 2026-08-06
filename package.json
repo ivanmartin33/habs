@@ -8,7 +8,7 @@
     "ios": "expo start --ios"
   },
   "dependencies": {
-    "expo": "56.0.12",
+    "expo": "~56.0.18",
     "expo-status-bar": "~56.0.4",
     "expo-notifications": "~56.0.18",
     "expo-file-system": "~56.0.8",
