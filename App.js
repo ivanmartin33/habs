@@ -29,10 +29,12 @@ import {
   uid,
 } from './lib/storage';
 import {
-  completionRate,
+  ageInDays,
+  completionStats,
   currentStreak,
   dayTotal,
   isDayCompleted,
+  isDayNoted,
   lastEntryForDay,
   lastNDays,
   lastNDaysTotals,
@@ -63,6 +65,23 @@ const MOIS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 
 function frDateLabel(d) {
   const s = `${JOURS[d.getDay()]} ${d.getDate()} ${MOIS[d.getMonth()]}`;
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+const JOURS_COURT = ['dim.', 'lun.', 'mar.', 'mer.', 'jeu.', 'ven.', 'sam.'];
+const MOIS_COURT = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
+// "mar. 5 août" à partir d'une clé YYYY-MM-DD.
+function frShortDate(key) {
+  const [y, m, d] = key.split('-').map(Number);
+  const date = new Date(y, m - 1, d);
+  return `${JOURS_COURT[date.getDay()]} ${d} ${MOIS_COURT[m - 1]}`;
+}
+
+// Version translucide d'une couleur hex (barres "renseigné mais pas réussi").
+function dim(hex, alpha) {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
 }
 
 const TABS = [
@@ -123,12 +142,14 @@ export default function App() {
       setTab('today'); // ouvrir sur Aujourd'hui pour voir le check-in appliqué
       const action = response.actionIdentifier;
       const habitId = response?.notification?.request?.content?.data?.habitId;
-      const inc =
-        action === 'plus1' ? 1 : action === 'plus3' ? 3 : action === 'plus5' ? 5 : action === 'done' ? 1 : 0;
-      if (inc && habitId) {
+      // 'zero' / 'notdone' enregistrent un 0 explicite : le jour devient
+      // "renseigné" au lieu de rester un trou dans les données.
+      const ACTION_VALUES = { plus1: 1, plus3: 3, plus5: 5, done: 1, zero: 0, notdone: 0 };
+      const value = ACTION_VALUES[action];
+      if (value !== undefined && habitId) {
         const { habits: h, entries: e } = latest.current;
         if (h.some((x) => x.id === habitId)) {
-          const entry = { id: uid(), habitId, date: todayKey(), ts: Date.now(), value: inc };
+          const entry = { id: uid(), habitId, date: todayKey(), ts: Date.now(), value };
           const next = [...e, entry];
           setEntries(next);
           saveEntries(next);
@@ -202,7 +223,7 @@ export default function App() {
         {tab === 'habits' && (
           <HabitsScreen habits={habits} onChange={persistHabits} entries={entries} onEntriesChange={persistEntries} />
         )}
-        {tab === 'stats' && <StatsScreen habits={habits} entries={entries} />}
+        {tab === 'stats' && <StatsScreen habits={habits} entries={entries} onEntriesChange={persistEntries} />}
         {tab === 'settings' && (
           <SettingsScreen settings={settings} onChange={persistSettings} habits={habits} entries={entries} />
         )}
@@ -270,11 +291,12 @@ function TodayScreen({ habits, entries, lastReminderAt, onCheckIn }) {
 function TodayControl({ habit, last, entries, lastReminderAt, onCheckIn }) {
   if (habit.type === 'tally') {
     const key = todayKey();
+    const noted = isDayNoted(entries, habit.id, key);
     const total = Math.max(0, dayTotal(entries, habit.id, key));
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
     const reminderTs = lastReminderAt && lastReminderAt >= startOfDay.getTime() ? lastReminderAt : 0;
-    const sinceReminder = reminderTs ? Math.max(0, sumSince(entries, habit.id, reminderTs)) : null;
+    const sinceReminder = reminderTs ? Math.max(0, sumSince(entries, habit.id, reminderTs, key)) : null;
     return (
       <View>
         <View style={styles.tallyRow}>
@@ -282,8 +304,12 @@ function TodayControl({ habit, last, entries, lastReminderAt, onCheckIn }) {
             style={({ pressed }) => [styles.circleBtn, pressed && styles.pressed]}
             onPress={() => total > 0 && onCheckIn(habit, -1)}
           >
-            <Ionicons name="remove" size={26} color={LABEL} />
+            <Ionicons name="remove" size={22} color={LABEL} />
           </Pressable>
+          <View style={styles.tallyCenter}>
+            <Text style={styles.tallyTotal}>{total}</Text>
+            <Text style={styles.tallyCaption}>aujourd'hui</Text>
+          </View>
           <Pressable
             style={({ pressed }) => [styles.tallyPlus, pressed && styles.pressed]}
             onPress={() => onCheckIn(habit, 1)}
@@ -291,8 +317,15 @@ function TodayControl({ habit, last, entries, lastReminderAt, onCheckIn }) {
             <Text style={styles.tallyPlusText}>+1</Text>
           </Pressable>
         </View>
-        <Text style={styles.tallyTotal}>Aujourd'hui : {total}</Text>
-        <Text style={[styles.muted, { textAlign: 'center' }]}>
+        {!noted && (
+          <Pressable
+            style={({ pressed }) => [styles.ghostBtn, pressed && styles.pressed]}
+            onPress={() => onCheckIn(habit, 0)}
+          >
+            <Text style={styles.ghostBtnText}>Rien aujourd'hui (noter 0)</Text>
+          </Pressable>
+        )}
+        <Text style={[styles.muted, { textAlign: 'center', marginTop: 8 }]}>
           {sinceReminder != null
             ? `Depuis le dernier rappel : ${sinceReminder} (${relTime(reminderTs)})`
             : 'Depuis le dernier rappel : —'}
@@ -303,13 +336,22 @@ function TodayControl({ habit, last, entries, lastReminderAt, onCheckIn }) {
 
   if (habit.type === 'bool') {
     const done = last && Number(last.value) >= 1;
+    const notDone = !!last && !done; // 0 explicite ("pas fait")
     return (
-      <Pressable
-        style={({ pressed }) => [styles.bigButton, done && styles.bigButtonDone, pressed && styles.pressed]}
-        onPress={() => onCheckIn(habit, 1)}
-      >
-        <Text style={styles.bigButtonText}>{done ? 'Fait ✓ (re-marquer)' : 'Marquer comme fait'}</Text>
-      </Pressable>
+      <View style={styles.boolRow}>
+        <Pressable
+          style={({ pressed }) => [styles.bigButton, styles.boolBtn, done && styles.bigButtonDone, pressed && styles.pressed]}
+          onPress={() => onCheckIn(habit, 1)}
+        >
+          <Text style={styles.bigButtonText}>{done ? 'Fait ✓' : 'Fait'}</Text>
+        </Pressable>
+        <Pressable
+          style={({ pressed }) => [styles.ghostBtn, styles.boolGhost, notDone && styles.ghostBtnActive, pressed && styles.pressed]}
+          onPress={() => onCheckIn(habit, 0)}
+        >
+          <Text style={[styles.ghostBtnText, notDone && styles.ghostBtnTextActive]}>Pas fait</Text>
+        </Pressable>
+      </View>
     );
   }
   if (habit.type === 'count') {
@@ -320,14 +362,14 @@ function TodayControl({ habit, last, entries, lastReminderAt, onCheckIn }) {
           style={({ pressed }) => [styles.circleBtn, pressed && styles.pressed]}
           onPress={() => onCheckIn(habit, Math.max(0, value - 1))}
         >
-          <Ionicons name="remove" size={26} color={LABEL} />
+          <Ionicons name="remove" size={22} color={LABEL} />
         </Pressable>
         <Text style={styles.stepValue}>{value} / {habit.target || 1}</Text>
         <Pressable
           style={({ pressed }) => [styles.circleBtn, pressed && styles.pressed]}
           onPress={() => onCheckIn(habit, value + 1)}
         >
-          <Ionicons name="add" size={26} color={LABEL} />
+          <Ionicons name="add" size={22} color={LABEL} />
         </Pressable>
       </View>
     );
@@ -457,61 +499,115 @@ function HabitsScreen({ habits, onChange, entries, onEntriesChange }) {
 
 /* ----------------------------- Stats ----------------------------- */
 
-function StatsScreen({ habits, entries }) {
+function StatsScreen({ habits, entries, onEntriesChange }) {
   if (habits.length === 0) {
     return <EmptyState text="Ajoute des habitudes pour voir des statistiques." />;
   }
+
+  // Correction d'un jour passé depuis le graphe. Pour "tally" on ajoute un
+  // delta (les entrées sont des incréments), sinon une entrée "dernier gagne".
+  const setDayValue = (habit, key, value) => {
+    if (habit.type === 'tally') {
+      const current = Math.max(0, dayTotal(entries, habit.id, key));
+      const delta = value - current;
+      if (delta === 0 && isDayNoted(entries, habit.id, key)) return;
+      onEntriesChange([...entries, { id: uid(), habitId: habit.id, date: key, ts: Date.now(), value: delta }]);
+    } else {
+      onEntriesChange([...entries, { id: uid(), habitId: habit.id, date: key, ts: Date.now(), value }]);
+    }
+  };
+
+  // Effacer toutes les entrées du jour → il redevient "non renseigné".
+  const clearDay = (habit, key) => {
+    onEntriesChange(entries.filter((e) => !(e.habitId === habit.id && e.date === key)));
+  };
+
   return (
     <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
-      {habits.map((habit) => {
-        if (habit.type === 'tally') {
-          const totals = lastNDaysTotals(habit.id, entries, 14);
-          const today = totals[totals.length - 1].total;
-          const avg = (totals.reduce((a, b) => a + b.total, 0) / totals.length).toFixed(1);
-          const max = Math.max(1, ...totals.map((t) => t.total));
-          return (
-            <View key={habit.id} style={styles.card}>
-              <View style={styles.cardHeaderRow}>
-                <View style={[styles.dot, { backgroundColor: habit.color }]} />
-                <Text style={styles.cardTitle}>{habit.name}</Text>
-              </View>
-              <View style={styles.statRow}>
-                <Stat label="Aujourd'hui" value={`${today}`} />
-                <Stat label="Moyenne / jour" value={`${avg}`} />
-              </View>
-              <Text style={styles.label}>14 derniers jours (total / jour)</Text>
-              <View style={styles.chartRow}>
-                {totals.map((t) => {
-                  const h = Math.max(4, Math.round((t.total / max) * 60));
-                  return (
-                    <View key={t.date} style={styles.chartCol}>
-                      <View style={[styles.bar, { height: h, backgroundColor: habit.color }]} />
-                    </View>
-                  );
-                })}
-              </View>
-            </View>
-          );
-        }
-        const streak = currentStreak(habit, entries);
-        const rate = Math.round(completionRate(habit, entries, 30) * 100);
-        const series = lastNDays(habit, entries, 14);
-        return (
-          <View key={habit.id} style={styles.card}>
-            <View style={styles.cardHeaderRow}>
-              <View style={[styles.dot, { backgroundColor: habit.color }]} />
-              <Text style={styles.cardTitle}>{habit.name}</Text>
-            </View>
-            <View style={styles.statRow}>
-              <Stat label="Série" value={`${streak} j`} />
-              <Stat label="Complétion 30 j" value={`${rate} %`} />
-            </View>
-            <Text style={styles.label}>14 derniers jours</Text>
-            <MiniChart series={series} color={habit.color} />
-          </View>
-        );
-      })}
+      {habits.map((habit) => (
+        <HabitStatsCard key={habit.id} habit={habit} entries={entries} onSetDay={setDayValue} onClearDay={clearDay} />
+      ))}
     </ScrollView>
+  );
+}
+
+function HabitStatsCard({ habit, entries, onSetDay, onClearDay }) {
+  const [selected, setSelected] = useState(null); // index de la barre touchée
+  const [editing, setEditing] = useState(false);
+  const isTally = habit.type === 'tally';
+
+  const series = isTally
+    ? lastNDaysTotals(habit.id, entries, 14).map((t) => ({ date: t.date, value: t.total, noted: t.noted, done: t.noted }))
+    : lastNDays(habit, entries, 14);
+
+  const onSelect = (i) => {
+    setSelected(i === selected ? null : i);
+    setEditing(false);
+  };
+
+  return (
+    <View style={styles.card}>
+      <View style={styles.cardHeaderRow}>
+        <View style={[styles.dot, { backgroundColor: habit.color }]} />
+        <Text style={styles.cardTitle}>{habit.name}</Text>
+      </View>
+
+      {isTally ? <TallyStatsRow habit={habit} entries={entries} series={series} /> : <ClassicStatsRow habit={habit} entries={entries} />}
+
+      <Text style={styles.label}>14 derniers jours</Text>
+      <BarChart series={series} color={habit.color} selected={selected} onSelect={onSelect} />
+      {selected != null && (
+        <DayDetail
+          key={series[selected].date}
+          habit={habit}
+          day={series[selected]}
+          editing={editing}
+          onEdit={() => setEditing(true)}
+          onCancel={() => setEditing(false)}
+          onSave={(v) => {
+            onSetDay(habit, series[selected].date, v);
+            setEditing(false);
+          }}
+          onClear={() => {
+            onClearDay(habit, series[selected].date);
+            setEditing(false);
+          }}
+        />
+      )}
+      <Text style={styles.chartHint}>Barre grise = non renseigné · touche une barre pour voir / corriger</Text>
+    </View>
+  );
+}
+
+// Les taux sont calculés sur les jours renseignés uniquement, pour ne pas
+// confondre "rien noté" (donnée manquante) et "0 explicite" (échec noté).
+function ClassicStatsRow({ habit, entries }) {
+  const streak = currentStreak(habit, entries);
+  const cs = completionStats(habit, entries, 30);
+  const rate = cs.noted ? `${Math.round((cs.done / cs.noted) * 100)} %` : '—';
+  return (
+    <View style={styles.statRow}>
+      <Stat label="Série" value={`${streak} j`} />
+      <Stat label="Réussite" value={rate} />
+      <Stat label="Renseigné" value={`${cs.noted}/${cs.window} j`} />
+    </View>
+  );
+}
+
+function TallyStatsRow({ habit, entries, series }) {
+  const window = ageInDays(habit, 14);
+  const observable = series.slice(-window);
+  const notedDays = observable.filter((d) => d.noted);
+  const today = series[series.length - 1].value;
+  const avg = notedDays.length
+    ? (notedDays.reduce((a, d) => a + d.value, 0) / notedDays.length).toFixed(1)
+    : '—';
+  return (
+    <View style={styles.statRow}>
+      <Stat label="Aujourd'hui" value={`${today}`} />
+      <Stat label="Moy. / j noté" value={`${avg}`} />
+      <Stat label="Renseigné" value={`${notedDays.length}/${window} j`} />
+    </View>
   );
 }
 
@@ -519,24 +615,114 @@ function Stat({ label, value }) {
   return (
     <View style={styles.statBox}>
       <Text style={styles.statValue}>{value}</Text>
-      <Text style={styles.muted}>{label}</Text>
+      <Text style={styles.statLabel}>{label}</Text>
     </View>
   );
 }
 
-function MiniChart({ series, color }) {
-  const max = Math.max(1, ...series.map((d) => d.value));
+// Barres : couleur pleine = réussi, couleur atténuée = renseigné sans succès,
+// gris = jour non renseigné. Chaque colonne est tapable (détail + correction).
+function BarChart({ series, color, selected, onSelect }) {
+  const max = Math.max(1, ...series.map((d) => (d.noted ? d.value : 0)));
   return (
     <View style={styles.chartRow}>
-      {series.map((d) => {
-        const h = Math.max(4, Math.round((d.value / max) * 60));
+      {series.map((d, i) => {
+        const h = d.noted ? Math.max(3, Math.round((d.value / max) * 54)) : 3;
+        const bg = !d.noted ? SURFACE2 : d.done ? color : dim(color, 0.45);
+        const isSel = selected === i;
         return (
-          <View key={d.date} style={styles.chartCol}>
-            <View style={[styles.bar, { height: h, backgroundColor: d.done ? color : SURFACE2 }]} />
-          </View>
+          <Pressable key={d.date} style={styles.chartCol} onPress={() => onSelect(i)}>
+            <View style={[styles.bar, { height: h, backgroundColor: bg }]} />
+            <View style={[styles.barDot, isSel && { backgroundColor: color }]} />
+          </Pressable>
         );
       })}
     </View>
+  );
+}
+
+function dayValueLabel(habit, day) {
+  if (!day.noted) return 'non renseigné';
+  const v = Number(day.value);
+  if (habit.type === 'bool') return v >= 1 ? 'fait ✓' : 'pas fait';
+  if (habit.type === 'count') return `${v} / ${habit.target || 1}`;
+  if (habit.type === 'scale') return `${v} / 5`;
+  return `${v}`;
+}
+
+function DayDetail({ habit, day, editing, onEdit, onCancel, onSave, onClear }) {
+  if (!editing) {
+    return (
+      <View style={styles.dayDetailRow}>
+        <Text style={styles.dayDetailText}>
+          {frShortDate(day.date)} · {dayValueLabel(habit, day)}
+        </Text>
+        <Pressable onPress={onEdit} hitSlop={8} style={({ pressed }) => pressed && styles.pressed}>
+          <Text style={styles.dayDetailEdit}>Corriger</Text>
+        </Pressable>
+      </View>
+    );
+  }
+  return <DayEditor habit={habit} day={day} onCancel={onCancel} onSave={onSave} onClear={onClear} />;
+}
+
+function DayEditor({ habit, day, onCancel, onSave, onClear }) {
+  const [draft, setDraft] = useState(day.noted ? Math.max(0, Number(day.value)) : 0);
+  const isStepper = habit.type === 'count' || habit.type === 'tally';
+  return (
+    <View style={styles.editorBlock}>
+      {habit.type === 'bool' && (
+        <View style={styles.editorRow}>
+          <EditChip label="Fait ✓" active={day.noted && Number(day.value) >= 1} onPress={() => onSave(1)} />
+          <EditChip label="Pas fait" active={day.noted && Number(day.value) < 1} onPress={() => onSave(0)} />
+        </View>
+      )}
+      {habit.type === 'scale' && (
+        <View style={styles.editorRow}>
+          {[1, 2, 3, 4, 5].map((n) => (
+            <EditChip key={n} label={String(n)} active={day.noted && Number(day.value) === n} onPress={() => onSave(n)} />
+          ))}
+        </View>
+      )}
+      {isStepper && (
+        <View style={styles.editorRow}>
+          <Pressable
+            style={({ pressed }) => [styles.smallCircleBtn, pressed && styles.pressed]}
+            onPress={() => setDraft(Math.max(0, draft - 1))}
+          >
+            <Ionicons name="remove" size={18} color={LABEL} />
+          </Pressable>
+          <Text style={styles.editorValue}>{draft}</Text>
+          <Pressable
+            style={({ pressed }) => [styles.smallCircleBtn, pressed && styles.pressed]}
+            onPress={() => setDraft(draft + 1)}
+          >
+            <Ionicons name="add" size={18} color={LABEL} />
+          </Pressable>
+          <Pressable style={({ pressed }) => [styles.editorOk, pressed && styles.pressed]} onPress={() => onSave(draft)}>
+            <Text style={styles.editorOkText}>OK</Text>
+          </Pressable>
+        </View>
+      )}
+      <View style={styles.editorFooter}>
+        {day.noted && (
+          <Pressable onPress={onClear} hitSlop={8} style={({ pressed }) => pressed && styles.pressed}>
+            <Text style={styles.editorClear}>Effacer le jour</Text>
+          </Pressable>
+        )}
+        <Pressable onPress={onCancel} hitSlop={8} style={({ pressed }) => [{ marginLeft: 'auto' }, pressed && styles.pressed]}>
+          <Text style={styles.editorCancel}>Annuler</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+function EditChip({ label, active, onPress }) {
+  return (
+    <Pressable style={({ pressed }) => [styles.editChip, active && styles.chipActive, pressed && styles.pressed]} onPress={onPress}>
+      <Text style={[styles.typeText, active && styles.typeTextActive]}>{label}</Text>
+    </Pressable>
   );
 }
 
@@ -677,60 +863,76 @@ const styles = StyleSheet.create({
 
   card: {
     backgroundColor: SURFACE,
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 14,
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 10,
   },
   rowCard: {
     backgroundColor: SURFACE,
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 10,
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 8,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
   },
-  cardHeaderRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 14, gap: 10 },
-  cardTitle: { color: LABEL, fontSize: 17, fontWeight: '600', flexShrink: 1 },
+  cardHeaderRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8, gap: 8 },
+  cardTitle: { color: LABEL, fontSize: 16, fontWeight: '600', flexShrink: 1 },
   dot: { width: 10, height: 10, borderRadius: 5 },
 
   muted: { color: LABEL2, fontSize: 13 },
-  label: { color: LABEL2, fontSize: 13, marginTop: 10, marginBottom: 6, fontWeight: '500' },
+  label: { color: LABEL2, fontSize: 13, marginTop: 8, marginBottom: 4, fontWeight: '500' },
 
   input: {
     backgroundColor: SURFACE2,
     borderRadius: 10,
     paddingHorizontal: 14,
-    paddingVertical: 12,
+    paddingVertical: 10,
     color: LABEL,
     fontSize: 16,
   },
 
   bigButton: {
     backgroundColor: ACCENT,
-    borderRadius: 14,
-    paddingVertical: 15,
+    borderRadius: 12,
+    paddingVertical: 11,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
-    marginTop: 14,
+    marginTop: 10,
   },
   bigButtonDone: { backgroundColor: '#1f6f4f' },
-  bigButtonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  bigButtonText: { color: '#fff', fontSize: 15, fontWeight: '600' },
 
   pressed: { opacity: 0.55 },
 
-  stepperRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 28, marginTop: 4 },
+  boolRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
+  boolBtn: { flex: 1.6, marginTop: 0 },
+  boolGhost: { flex: 1, marginTop: 0 },
+
+  ghostBtn: {
+    backgroundColor: SURFACE2,
+    borderRadius: 12,
+    paddingVertical: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 8,
+  },
+  ghostBtnText: { color: LABEL2, fontSize: 14, fontWeight: '600' },
+  ghostBtnActive: { backgroundColor: 'rgba(255,69,58,0.22)' },
+  ghostBtnTextActive: { color: '#ff6961' },
+
+  stepperRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 20, marginTop: 2 },
   circleBtn: {
-    width: 54, height: 54, borderRadius: 27, backgroundColor: SURFACE2,
+    width: 40, height: 40, borderRadius: 20, backgroundColor: SURFACE2,
     alignItems: 'center', justifyContent: 'center',
   },
-  stepValue: { color: LABEL, fontSize: 22, fontWeight: '600', minWidth: 90, textAlign: 'center' },
+  stepValue: { color: LABEL, fontSize: 18, fontWeight: '600', minWidth: 72, textAlign: 'center' },
 
   scaleRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 8 },
-  scaleButton: { flex: 1, paddingVertical: 14, borderRadius: 12, backgroundColor: SURFACE2, alignItems: 'center' },
+  scaleButton: { flex: 1, paddingVertical: 10, borderRadius: 10, backgroundColor: SURFACE2, alignItems: 'center' },
   scaleButtonActive: { backgroundColor: ACCENT },
-  scaleText: { color: LABEL, fontSize: 18, fontWeight: '700' },
+  scaleText: { color: LABEL, fontSize: 16, fontWeight: '700' },
   scaleTextActive: { color: '#fff' },
 
   typeRowWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
@@ -743,18 +945,52 @@ const styles = StyleSheet.create({
   segmentItem: { flex: 1, paddingVertical: 9, borderRadius: 8, alignItems: 'center' },
   segmentItemActive: { backgroundColor: ACCENT },
 
-  tallyRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 18, marginBottom: 12 },
-  tallyPlus: { backgroundColor: ACCENT, borderRadius: 16, paddingVertical: 18, paddingHorizontal: 52, alignItems: 'center' },
-  tallyPlusText: { color: '#fff', fontSize: 24, fontWeight: '800' },
-  tallyTotal: { color: LABEL, fontSize: 20, fontWeight: '700', textAlign: 'center', marginBottom: 4 },
+  tallyRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  tallyCenter: { flex: 1, alignItems: 'center' },
+  tallyPlus: { backgroundColor: ACCENT, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 28, alignItems: 'center' },
+  tallyPlusText: { color: '#fff', fontSize: 20, fontWeight: '800' },
+  tallyTotal: { color: LABEL, fontSize: 24, fontWeight: '700' },
+  tallyCaption: { color: LABEL2, fontSize: 11 },
 
-  statRow: { flexDirection: 'row', gap: 12, marginBottom: 8 },
-  statBox: { flex: 1, backgroundColor: SURFACE2, borderRadius: 12, padding: 14, alignItems: 'center' },
-  statValue: { color: LABEL, fontSize: 22, fontWeight: '700', marginBottom: 2 },
+  statRow: { flexDirection: 'row', gap: 8, marginBottom: 6 },
+  statBox: { flex: 1, backgroundColor: SURFACE2, borderRadius: 10, padding: 10, alignItems: 'center' },
+  statValue: { color: LABEL, fontSize: 17, fontWeight: '700', marginBottom: 2 },
+  statLabel: { color: LABEL2, fontSize: 11 },
 
-  chartRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 4, height: 70, marginTop: 6 },
+  chartRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 3, height: 64, marginTop: 4 },
   chartCol: { flex: 1, justifyContent: 'flex-end', alignItems: 'center' },
   bar: { width: '100%', borderRadius: 3 },
+  barDot: { width: 4, height: 4, borderRadius: 2, marginTop: 3, backgroundColor: 'transparent' },
+  chartHint: { color: LABEL2, fontSize: 11, marginTop: 6 },
+
+  dayDetailRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 8,
+    backgroundColor: SURFACE2,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  dayDetailText: { color: LABEL, fontSize: 14, fontWeight: '600', flex: 1 },
+  dayDetailEdit: { color: ACCENT, fontSize: 14, fontWeight: '600' },
+
+  editorBlock: { marginTop: 8, backgroundColor: SURFACE2, borderRadius: 10, padding: 10 },
+  editorRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  editorFooter: { flexDirection: 'row', alignItems: 'center', marginTop: 10 },
+  smallCircleBtn: {
+    width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(118,118,128,0.24)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  editorValue: { color: LABEL, fontSize: 18, fontWeight: '700', minWidth: 44, textAlign: 'center' },
+  editorOk: { marginLeft: 'auto', backgroundColor: ACCENT, borderRadius: 9, paddingVertical: 8, paddingHorizontal: 20 },
+  editorOkText: { color: '#fff', fontSize: 14, fontWeight: '700' },
+  editorClear: { color: DANGER, fontSize: 13, fontWeight: '600' },
+  editorCancel: { color: LABEL2, fontSize: 13, fontWeight: '600' },
+  editChip: {
+    flex: 1, paddingVertical: 9, borderRadius: 9, alignItems: 'center',
+    backgroundColor: 'rgba(118,118,128,0.24)',
+  },
 
   inlineRow: { flexDirection: 'row', gap: 12 },
   inlineCol: { flex: 1 },

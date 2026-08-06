@@ -10,16 +10,23 @@ des statistiques et exporte tout en CSV. Cible **iOS + Android**, testable via
 - **4 onglets** (navigation par état, sans `react-navigation`) :
   - **Aujourd'hui** — un check-in par habitude, contrôle adapté au type.
   - **Habitudes** — ajout (nom + type + objectif), liste, suppression.
-  - **Stats** — série (streak), taux de complétion sur 30 jours, mini-graphe des
-    14 derniers jours.
+  - **Stats** — série (streak), taux de réussite sur les jours renseignés,
+    couverture (« Renseigné x/N j »), graphe interactif des 14 derniers jours
+    (toucher une barre → détail du jour, correction ou effacement).
   - **Réglages** — nombre de rappels/jour, mode aléatoire ou fixe, export CSV.
+- **Jours « non renseignés » vs 0 explicite** : un jour sans check-in est
+  compté comme « non renseigné » (exclu des taux et moyennes), alors qu'un 0
+  noté explicitement (« Pas fait », « Rien aujourd'hui », bouton « Rien » de la
+  notification) compte comme un échec renseigné. Les barres grises du graphe
+  signalent les jours sans donnée.
 - **4 types d'habitude**, chacune avec son propre check-in :
-  - `bool` → bouton « Marquer comme fait »
+  - `bool` → boutons « Fait » / « Pas fait » (0 explicite)
   - `count` → stepper −/+ avec `valeur / objectif`
   - `scale` → boutons 1 à 5 (seuil de réussite, défaut 3)
   - `tally` (Consommation) → bouton +1 cumulatif pour suivre une consommation
-    (ex : cigarettes). Affiche le total du jour et « depuis le dernier rappel » ;
-    stats = total/jour + moyenne sur 14 jours.
+    (ex : cigarettes), plus « Rien aujourd'hui (noter 0) » tant que le jour est
+    vide. Affiche le total du jour et « depuis le dernier rappel » ;
+    stats = total/jour + moyenne sur les jours renseignés.
 - **Notifications locales** avec **fenêtre glissante** (7 jours d'avance, plafond
   60 notifications pour rester sous la limite iOS de 64), replanifiées à chaque
   retour de l'app au premier plan.
@@ -109,8 +116,15 @@ npx expo start
 - **Export** : `expo-file-system` (import `legacy` pour `documentDirectory` +
   `writeAsStringAsync`) puis `expo-sharing`. Colonnes :
   `date, heure, habitude, type, valeur, timestamp`.
-- **Notifications interactives** : catégories `tally` (boutons +1/+3/+5) et
-  `done` (bouton « Fait »), gérées via `setNotificationCategoryAsync` +
-  `addNotificationResponseReceivedListener`. En Expo Go le bouton ouvre l'app
-  pour appliquer l'incrément ; le vrai traitement en arrière-plan nécessite un
-  build EAS.
+- **Notifications interactives** : catégories `tally` (boutons +1/+3/« Rien »/+5 ;
+  Android n'affiche que les 3 premiers) et `done` (« Fait » / « Pas fait »),
+  gérées via `setNotificationCategoryAsync` +
+  `addNotificationResponseReceivedListener`. « Rien » / « Pas fait »
+  enregistrent un 0 explicite pour que le jour compte comme renseigné. En Expo
+  Go le bouton ouvre l'app pour appliquer l'incrément ; le vrai traitement en
+  arrière-plan nécessite un build EAS.
+- **Correction depuis les Stats** : toucher une barre du graphe montre la
+  valeur du jour ; « Corriger » ajoute une entrée datée de ce jour (le dernier
+  check-in fait foi ; pour `tally`, on ajoute un delta pour atteindre le
+  nouveau total). « Effacer le jour » supprime les entrées du jour, qui
+  redevient « non renseigné ».
