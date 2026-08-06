@@ -1,0 +1,17 @@
+# Build iOS du dev client (profil "development" de eas.json).
+# Prérequis (une fois) : credentials Apple configurés, par exemple
+#   npx eas-cli credentials:configure-build -p ios -e development
+# Déclenchement manuel : dashboard expo.dev → Workflows, ou
+#   npx eas-cli workflow:run .eas/workflows/build-ios-development.yml
+name: Build iOS (dev client)
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  build_ios_development:
+    name: Build iOS development client
+    type: build
+    params:
+      platform: ios
+      profile: development

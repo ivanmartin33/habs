@@ -1,0 +1,15 @@
+# Build Android APK installable directement (profil "preview" de eas.json).
+# Déclenchement manuel : dashboard expo.dev → Workflows, ou
+#   npx eas-cli workflow:run .eas/workflows/build-android-preview.yml
+name: Build Android (preview APK)
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  build_android_preview:
+    name: Build Android preview
+    type: build
+    params:
+      platform: android
+      profile: preview
