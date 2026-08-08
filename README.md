@@ -5,6 +5,13 @@ par jour pour demander « où en es-tu », tu fais un check-in rapide, elle calc
 des statistiques et exporte tout en CSV. Cible **iOS + Android**, testable via
 **Expo Go**.
 
+> **SDK Expo 54.** Le projet est volontairement maintenu sur le SDK 54 (et non
+> le dernier en date) parce que c'est la version la plus récente prise en charge
+> par [Expo Snack](https://snack.expo.dev), qui permet d'ouvrir l'app sur
+> iPhone sans serveur de développement allumé. `expo-dev-client` est
+> volontairement absent des dépendances : sa présence fait basculer
+> `expo start` en mode build de développement et gêne Expo Go.
+
 ## Fonctionnalités
 
 - **4 onglets** (navigation par état, sans `react-navigation`) :
